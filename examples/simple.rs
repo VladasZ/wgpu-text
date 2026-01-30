@@ -2,19 +2,15 @@
 mod ctx;
 
 use ctx::Ctx;
-use glyph_brush::OwnedSection;
 use glyph_brush::ab_glyph::FontRef;
+use glyph_brush::{HorizontalAlign, OwnedSection};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use wgpu_text::glyph_brush::{
-    BuiltInLineBreaker, Layout, OwnedText, Section, Text, VerticalAlign,
-};
+use wgpu_text::glyph_brush::{Layout, Section, Text, VerticalAlign};
 use wgpu_text::{BrushBuilder, TextBrush};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
-use winit::event::{KeyEvent, MouseScrollDelta};
+use winit::event::WindowEvent;
 use winit::event_loop::{self, ActiveEventLoop, ControlFlow};
-use winit::keyboard::{Key, NamedKey};
 use winit::window::Window;
 
 struct State<'a> {
@@ -24,8 +20,8 @@ struct State<'a> {
     font: &'a [u8],
     brush: Option<TextBrush<FontRef<'a>>>,
     font_size: f32,
-    section_0: Option<OwnedSection>,
-    section_1: Option<OwnedSection>,
+    section_a: Option<OwnedSection>,
+    section_b: Option<OwnedSection>,
 
     target_framerate: Duration,
     delta_time: Instant,
@@ -60,40 +56,37 @@ impl ApplicationHandler for State<'_> {
             config.format,
         ));
 
-        self.section_0 = Some(
+        self.section_a = Some(
             Section::default()
                 .add_text(
-                    Text::new(
-                        "Try typing some text,\n \
-                del - delete all, backspace - remove last character",
-                    )
-                    .with_scale(self.font_size)
-                    .with_color([0.9, 0.5, 0.5, 1.0]),
+                    Text::new("------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------")
+                        .with_scale(10.0)
+                        .with_color([0.0, 0.0, 0.0, 1.0]),
                 )
-                .with_bounds((config.width as f32 * 0.4, config.height as f32))
+                .with_bounds((config.width as f32, config.height as f32))
                 .with_layout(
                     Layout::default()
                         .v_align(VerticalAlign::Center)
-                        .line_breaker(BuiltInLineBreaker::AnyCharLineBreaker),
+                        .h_align(HorizontalAlign::Center),
                 )
-                .with_screen_position((50.0, config.height as f32 * 0.5))
+                .with_screen_position((400.0, 300.0))
                 .to_owned(),
         );
 
-        self.section_1 = Some(
+        self.section_b = Some(
             Section::default()
                 .add_text(
-                    Text::new("Other section")
-                        .with_scale(40.0)
+                    Text::new("E█")
+                        .with_scale(500.0)
                         .with_color([0.2, 0.5, 0.8, 1.0]),
                 )
-                .with_bounds((config.width as f32 * 0.5, config.height as f32))
+                .with_bounds((config.width as f32, config.height as f32))
                 .with_layout(
                     Layout::default()
-                        .v_align(VerticalAlign::Top)
-                        .line_breaker(BuiltInLineBreaker::AnyCharLineBreaker),
+                        .v_align(VerticalAlign::Center)
+                        .h_align(HorizontalAlign::Center),
                 )
-                .with_screen_position((500.0, config.height as f32 * 0.2))
+                .with_screen_position((400.0, 300.0))
                 .to_owned(),
         );
 
@@ -113,15 +106,11 @@ impl ApplicationHandler for State<'_> {
                 let device = &ctx.device;
                 let config = &mut ctx.config;
                 let surface = &ctx.surface;
-                let section_0 = self.section_0.as_mut().unwrap();
                 let brush = self.brush.as_mut().unwrap();
 
                 config.width = new_size.width.max(1);
                 config.height = new_size.height.max(1);
                 surface.configure(device, config);
-
-                section_0.bounds = (config.width as f32 * 0.4, config.height as _);
-                section_0.screen_position.1 = config.height as f32 * 0.5;
 
                 brush.resize_view(config.width as f32, config.height as f32, queue);
 
@@ -129,62 +118,6 @@ impl ApplicationHandler for State<'_> {
                 // brush.update_matrix(wgpu_text::ortho(config.width, config.height), &queue);
             }
             WindowEvent::CloseRequested => elwt.exit(),
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => match logical_key {
-                Key::Named(k) => match k {
-                    NamedKey::Escape => elwt.exit(),
-                    NamedKey::Delete => self.section_0.as_mut().unwrap().text.clear(),
-                    NamedKey::Backspace
-                        if !self.section_0.clone().unwrap().text.is_empty() =>
-                    {
-                        let section = self.section_0.as_mut().unwrap();
-                        let mut end_text = section.text.remove(section.text.len() - 1);
-                        end_text.text.pop();
-                        if !end_text.text.is_empty() {
-                            self.section_0.as_mut().unwrap().text.push(end_text.clone());
-                        }
-                    }
-                    _ => (),
-                },
-                Key::Character(char) => {
-                    let c = char.as_str();
-                    if c != "\u{7f}" && c != "\u{8}" {
-                        if self.section_0.clone().unwrap().text.is_empty() {
-                            self.section_0.as_mut().unwrap().text.push(
-                                OwnedText::default()
-                                    .with_scale(self.font_size)
-                                    .with_color([0.9, 0.5, 0.5, 1.0]),
-                            );
-                        }
-                        self.section_0.as_mut().unwrap().text.push(
-                            OwnedText::new(c.to_string())
-                                .with_scale(self.font_size)
-                                .with_color([0.9, 0.5, 0.5, 1.0]),
-                        );
-                    }
-                }
-                _ => (),
-            },
-            WindowEvent::MouseWheel {
-                delta: MouseScrollDelta::LineDelta(_, y),
-                ..
-            } => {
-                // increase/decrease font size
-                let mut size = self.font_size;
-                if y > 0.0 {
-                    size += (size / 4.0).max(2.0)
-                } else {
-                    size *= 4.0 / 5.0
-                };
-                self.font_size = (size.clamp(3.0, 25000.0) * 2.0).round() / 2.0;
-            }
             WindowEvent::RedrawRequested => {
                 let brush = self.brush.as_mut().unwrap();
                 let ctx = self.ctx.as_ref().unwrap();
@@ -192,10 +125,10 @@ impl ApplicationHandler for State<'_> {
                 let device = &ctx.device;
                 let config = &ctx.config;
                 let surface = &ctx.surface;
-                let section_0 = self.section_0.as_ref().unwrap();
-                let section_1 = self.section_1.as_ref().unwrap();
+                let section_a = self.section_a.as_ref().unwrap();
+                let section_b = self.section_b.as_ref().unwrap();
 
-                match brush.queue(device, queue, [section_0, section_1]) {
+                match brush.queue(device, queue, [section_b, section_a]) {
                     Ok(_) => (),
                     Err(err) => {
                         panic!("{err}");
@@ -294,8 +227,8 @@ fn main() {
         font: include_bytes!("fonts/DejaVuSans.ttf"),
         brush: None,
         font_size: 25.,
-        section_0: None,
-        section_1: None,
+        section_a: None,
+        section_b: None,
 
         // FPS and window updating:
         // change '60.0' if you want different FPS cap
