@@ -210,7 +210,7 @@ impl ApplicationHandler for State<'_> {
                     _ => {
                         surface.configure(device, config);
                         let wgpu::CurrentSurfaceTexture::Success(frame) =
-                            dbg!(surface.get_current_texture())
+                            surface.get_current_texture()
                         else {
                             panic!("Failed to acquire next surface texture!");
                         };
