@@ -67,7 +67,7 @@ where
                         BrushAction::Draw(vertices) => {
                             self.pipeline.update_vertex_buffer(vertices, device, queue)
                         }
-                        BrushAction::ReDraw => (),
+                        BrushAction::ReDraw => self.pipeline.redraw(),
                     };
                 }
 
@@ -135,6 +135,14 @@ where
     #[inline]
     pub fn draw(&self, rpass: &mut wgpu::RenderPass) {
         self.pipeline.draw(rpass)
+    }
+
+    /// Marks the start of a new frame. Call once per frame before the
+    /// first `queue` so that `queue` and `draw` can be used several
+    /// times within one frame without the writes overwriting each other.
+    #[inline]
+    pub fn next_frame(&mut self) {
+        self.pipeline.next_frame();
     }
 
     /// Resizes the view matrix. Updates the default orthographic view matrix with
