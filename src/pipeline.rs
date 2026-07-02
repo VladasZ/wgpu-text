@@ -1,10 +1,9 @@
-use std::num::NonZeroU32;
+use std::{num::NonZeroU32, ops::Range};
 
 use glyph_brush::{
     Rectangle,
     ab_glyph::{Rect, point},
 };
-use wgpu::util::DeviceExt;
 
 use crate::{Matrix, cache::Cache};
 
@@ -15,7 +14,10 @@ pub struct Pipeline {
     cache: Cache,
 
     vertex_buffer: wgpu::Buffer,
-    vertex_buffer_len: usize,
+    /// Bump allocation cursor for this frame's vertex writes.
+    cursor: u64,
+    /// Byte range of the last written vertices, used by `draw`.
+    range: Range<u64>,
     vertices: u32,
 }
 
@@ -83,7 +85,8 @@ impl Pipeline {
             cache,
 
             vertex_buffer,
-            vertex_buffer_len: 0,
+            cursor: 0,
+            range: 0..0,
             vertices: 0,
         }
     }
@@ -92,35 +95,61 @@ impl Pipeline {
     pub fn draw(&self, rpass: &mut wgpu::RenderPass) {
         if self.vertices != 0 {
             rpass.set_pipeline(&self.inner);
-            rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            rpass.set_vertex_buffer(0, self.vertex_buffer.slice(self.range.clone()));
             rpass.set_bind_group(0, &self.cache.bind_group, &[]);
 
             rpass.draw(0..4, 0..self.vertices);
         }
     }
-    // TODO look into preallocating the vertex buffer instead of constantly reallocating
+
+    /// All queued buffer writes execute together before any render pass,
+    /// so an appending write must not touch bytes an earlier recorded draw
+    /// still reads. The buffer is bump-allocated: a plain write starts over
+    /// at the beginning and an appending write goes after the previous one.
+    /// Draws recorded with the old buffer keep it alive when it is
+    /// replaced here.
     pub fn update_vertex_buffer(
         &mut self,
         vertices: Vec<Vertex>,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        append: bool,
     ) {
+        if !append {
+            self.cursor = 0;
+        }
+
         self.vertices = vertices.len() as u32;
-        let data: &[u8] = bytemuck::cast_slice(&vertices);
 
-        if vertices.len() > self.vertex_buffer_len {
-            self.vertex_buffer_len = vertices.len();
-
-            self.vertex_buffer =
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("wgpu-text Vertex Buffer"),
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    contents: data,
-                });
-
+        if vertices.is_empty() {
+            self.range = self.cursor..self.cursor;
             return;
         }
-        queue.write_buffer(&self.vertex_buffer, 0, data);
+
+        let data: &[u8] = bytemuck::cast_slice(&vertices);
+        let size = data.len() as u64;
+
+        if self.cursor + size > self.vertex_buffer.size() {
+            self.vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("wgpu-text Vertex Buffer"),
+                size: size.max(self.vertex_buffer.size() * 2).max(4096),
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.cursor = 0;
+        }
+
+        queue.write_buffer(&self.vertex_buffer, self.cursor, data);
+        self.range = self.cursor..self.cursor + size;
+        self.cursor = self.range.end.next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT);
+    }
+
+    /// Keeps the previous vertices for another draw. The cursor skips
+    /// past them so a later appending write does not overwrite what the
+    /// reused draw reads.
+    pub fn redraw(&mut self, append: bool) {
+        let end = self.range.end.next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT);
+        self.cursor = if append { self.cursor.max(end) } else { end };
     }
 
     #[inline]

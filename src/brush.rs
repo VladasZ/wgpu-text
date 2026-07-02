@@ -55,6 +55,32 @@ where
         self.process_queued(device, queue)
     }
 
+    /// Like [`queue`](#method.queue), but keeps the vertices of the earlier
+    /// batches of this frame, so every batch can have its own
+    /// [`draw`](#method.draw) call, for example with a different scissor rect
+    /// or viewport.
+    ///
+    /// The first batch of a frame goes through [`queue`](#method.queue) and
+    /// every later one through this method. `wgpu` runs all buffer writes of a
+    /// frame before any render pass, so a second [`queue`](#method.queue) would
+    /// replace the vertices an earlier draw still reads.
+    #[inline]
+    pub fn queue_append<'a, S, I: IntoIterator<Item = S>>(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        sections: I,
+    ) -> Result<(), BrushError>
+    where
+        S: Into<std::borrow::Cow<'a, Section<'a>>>,
+    {
+        for s in sections {
+            self.inner.queue(s);
+        }
+
+        self.process_queued_append(device, queue)
+    }
+
     /// Queues a single section positioned by a custom layout, any type that
     /// implements [`glyph_brush::GlyphPositioner`]. Call
     /// [`process_queued`](#method.process_queued) once after all sections
@@ -73,10 +99,32 @@ where
     ///
     /// [`queue`](#method.queue) does this automatically. Sections queued with
     /// [`queue_custom_layout`](#method.queue_custom_layout) need an explicit call.
+    #[inline]
     pub fn process_queued(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+    ) -> Result<(), BrushError> {
+        self.process(device, queue, false)
+    }
+
+    /// Like [`process_queued`](#method.process_queued), but keeps the vertices
+    /// of the earlier batches of this frame, see
+    /// [`queue_append`](#method.queue_append).
+    #[inline]
+    pub fn process_queued_append(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Result<(), BrushError> {
+        self.process(device, queue, true)
+    }
+
+    fn process(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        append: bool,
     ) -> Result<(), BrushError> {
         // Process sections:
         loop {
@@ -90,10 +138,10 @@ where
             match brush_action {
                 Ok(action) => {
                     break match action {
-                        BrushAction::Draw(vertices) => {
-                            self.pipeline.update_vertex_buffer(vertices, device, queue)
-                        }
-                        BrushAction::ReDraw => (),
+                        BrushAction::Draw(vertices) => self
+                            .pipeline
+                            .update_vertex_buffer(vertices, device, queue, append),
+                        BrushAction::ReDraw => self.pipeline.redraw(append),
                     };
                 }
 
