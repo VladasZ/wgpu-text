@@ -52,6 +52,29 @@ where
             self.inner.queue(s);
         }
 
+        self.process_queued(device, queue)
+    }
+
+    /// Queues a single section positioned by a custom layout. Call
+    /// [`process_queued`](#method.process_queued) once after all sections
+    /// of the frame are queued.
+    #[inline]
+    pub fn queue_section_with_layout<'a, S, G>(&mut self, section: S, layout: &G)
+    where
+        S: Into<std::borrow::Cow<'a, Section<'a>>>,
+        G: glyph_brush::GlyphPositioner,
+    {
+        self.inner.queue_custom_layout(section, layout);
+    }
+
+    /// Processes all queued sections and updates the inner vertex buffer.
+    /// [`queue`](#method.queue) does this automatically, sections queued
+    /// with a custom layout need an explicit call.
+    pub fn process_queued(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Result<(), BrushError> {
         // Process sections:
         loop {
             // Contains BrushAction enum which marks for
@@ -113,6 +136,21 @@ where
         S: Into<std::borrow::Cow<'a, Section<'a>>>,
     {
         self.inner.glyph_bounds(section)
+    }
+
+    /// Like [`glyph_bounds`](#method.glyph_bounds) but positions glyphs
+    /// with a custom layout, so measurements match custom layout drawing.
+    #[inline]
+    pub fn glyph_bounds_with_layout<'a, S, G>(
+        &mut self,
+        section: S,
+        layout: &G,
+    ) -> Option<Rect>
+    where
+        S: Into<std::borrow::Cow<'a, Section<'a>>>,
+        G: glyph_brush::GlyphPositioner + std::hash::Hash,
+    {
+        self.inner.glyph_bounds_custom_layout(section, layout)
     }
 
     /// Returns an iterator over the `PositionedGlyph`s of the given section.
