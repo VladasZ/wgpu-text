@@ -70,3 +70,43 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     return vec4<f32>(in.color.rgb, in.color.a * alpha);
 }
+
+fn srgb_encode(c: f32) -> f32 {
+    if c <= 0.0031308 {
+        return c * 12.92;
+    }
+    return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
+fn srgb_decode(c: f32) -> f32 {
+    if c <= 0.04045 {
+        return c / 12.92;
+    }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+
+// Browsers composite text in sRGB space. An sRGB render target blends
+// in linear space, which makes dark text on light too thin and light
+// text on dark too thick. Exact matching needs the destination pixel,
+// which the pass cannot read, so the background is assumed to contrast
+// with the glyph luminance. That is exact for the two dominant UI
+// cases and close in between. Coverage is remapped so the linear blend
+// lands where the sRGB space blend would.
+@fragment
+fn fs_main_gamma(in: VertexOutput) -> @location(0) vec4<f32> {
+    let coverage: f32 = textureSample(texture, tex_sampler, in.tex_pos).r;
+
+    let y = dot(in.color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let fg = srgb_encode(y);
+    let bg = 1.0 - fg;
+    let fg_lin = srgb_decode(fg);
+    let bg_lin = srgb_decode(bg);
+    let blend_lin = srgb_decode(mix(bg, fg, coverage));
+
+    var alpha: f32 = coverage;
+    if abs(fg_lin - bg_lin) > 0.001 {
+        alpha = (blend_lin - bg_lin) / (fg_lin - bg_lin);
+    }
+
+    return vec4<f32>(in.color.rgb, in.color.a * alpha);
+}

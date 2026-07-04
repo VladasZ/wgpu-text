@@ -50,6 +50,15 @@ impl Pipeline {
                 immediate_size: 0,
             });
 
+        // The gamma entry point compensates for linear space blending,
+        // which only happens on sRGB targets. Plain targets blend the
+        // written values as they are, no correction needed.
+        let fs_entry = if render_format.is_srgb() {
+            "fs_main_gamma"
+        } else {
+            "fs_main"
+        };
+
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("wgpu-text Render Pipeline"),
             layout: Some(&pipeline_layout),
@@ -68,7 +77,7 @@ impl Pipeline {
             multisample,
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some(fs_entry),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: render_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
