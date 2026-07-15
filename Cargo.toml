@@ -12,13 +12,13 @@ categories = ["graphics", "rendering"]
 include = ["src/**/*", "LICENSE", "Cargo.toml", "README.md", ".gitignore"]
 
 [dependencies]
-wgpu = "30.0.0"
+wgpu = { git = "https://github.com/VladasZ/wgpu", rev = "47e55304a59f0c8d933cb3be3dc84b29a1b871f6" }
 glyph_brush = "0.7.12"
 log = "0.4.29"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 
 [dev-dependencies]
-wgpu = { version = "30.0.0", features = ["spirv"] }
+wgpu = { git = "https://github.com/VladasZ/wgpu", rev = "47e55304a59f0c8d933cb3be3dc84b29a1b871f6", features = ["spirv"] }
 winit = "0.30.13"
 pollster = "0.4.0"
 env_logger = "0.11.9"
