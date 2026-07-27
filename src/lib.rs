@@ -19,11 +19,20 @@
 mod brush;
 mod cache;
 mod error;
+mod extra;
 mod pipeline;
 
 pub use brush::{BrushBuilder, TextBrush};
 pub use error::BrushError;
+pub use extra::{TextBuilder, TextExtra};
 pub use glyph_brush;
+
+/// Sections and text carry [`TextExtra`] instead of [`glyph_brush::Extra`], so
+/// these aliases stand in for the glyph_brush types of the same name.
+pub type Section<'a> = glyph_brush::Section<'a, TextExtra>;
+pub type Text<'a> = glyph_brush::Text<'a, TextExtra>;
+pub type OwnedSection = glyph_brush::OwnedSection<TextExtra>;
+pub type OwnedText = glyph_brush::OwnedText<TextExtra>;
 
 /// Represents a two-dimensional array matrix with 4x4 dimensions.
 pub type Matrix = [[f32; 4]; 4];
