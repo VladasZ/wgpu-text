@@ -188,6 +188,16 @@ pub struct Vertex {
     tex_top_left: [f32; 2],
     tex_bottom_right: [f32; 2],
     color: [f32; 4],
+    /// Top and bottom of the section box, the range the gradient ramps over.
+    ramp: [f32; 2],
+    /// Packed to keep the per glyph cost at 12 bytes instead of 24. Eight bits
+    /// per channel is what a source color has anyway.
+    end_color: [u8; 4],
+}
+
+/// The shader reads this back as `Unorm8x4`.
+fn pack_color(color: [f32; 4]) -> [u8; 4] {
+    color.map(|channel| (channel.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
 }
 
 impl Vertex {
@@ -197,7 +207,7 @@ impl Vertex {
             pixel_coords,
             bounds,
             extra,
-        }: glyph_brush::GlyphVertex,
+        }: glyph_brush::GlyphVertex<crate::TextExtra>,
     ) -> Vertex {
         let mut rect = Rect {
             min: point(pixel_coords.min.x, pixel_coords.min.y),
@@ -236,6 +246,8 @@ impl Vertex {
             tex_top_left: [tex_coords.min.x, tex_coords.min.y],
             tex_bottom_right: [tex_coords.max.x, tex_coords.max.y],
             color: extra.color,
+            ramp: [bounds.min.y, bounds.max.y],
+            end_color: pack_color(extra.end_color),
         }
     }
 
@@ -268,6 +280,16 @@ impl Vertex {
                     format: wgpu::VertexFormat::Float32x4,
                     offset: std::mem::size_of::<[f32; 9]>() as wgpu::BufferAddress,
                     shader_location: 4,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: std::mem::size_of::<[f32; 13]>() as wgpu::BufferAddress,
+                    shader_location: 5,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Unorm8x4,
+                    offset: std::mem::size_of::<[f32; 15]>() as wgpu::BufferAddress,
+                    shader_location: 6,
                 },
             ],
         }

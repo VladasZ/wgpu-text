@@ -5,6 +5,8 @@ struct VertexInput {
     @location(2) tex_top_left: vec2<f32>,
     @location(3) tex_bottom_right: vec2<f32>,
     @location(4) color: vec4<f32>,
+    @location(5) ramp: vec2<f32>,
+    @location(6) end_color: vec4<f32>,
 }
 
 struct Matrix {
@@ -55,7 +57,15 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     }
 
     out.clip_position = ortho.v * vec4<f32>(pos, in.top_left.z, 1.0);
-    out.color = in.color;
+
+    // The ramp runs down the section box, so the corner colors interpolate to
+    // the same result a per fragment mix would give, for one instruction and
+    // no extra value crossing between the stages. Flat text has both colors
+    // equal and lands on its own color at every t.
+    let span = max(in.ramp.y - in.ramp.x, 0.0001);
+    let t = clamp((pos.y - in.ramp.x) / span, 0.0, 1.0);
+    out.color = mix(in.color, in.end_color, t);
+
     return out;
 }
 
