@@ -1,12 +1,12 @@
 use std::num::NonZeroU32;
 
 use crate::{
-    Matrix,
+    Matrix, Section, TextExtra,
     error::BrushError,
     pipeline::{Pipeline, Vertex},
 };
 use glyph_brush::{
-    BrushAction, DefaultSectionHasher, Extra, GlyphCruncher, Section, SectionGlyphIter,
+    BrushAction, DefaultSectionHasher, GlyphCruncher, SectionGlyphIter,
     ab_glyph::{Font, FontArc, FontRef, InvalidFont, Rect},
 };
 
@@ -14,7 +14,7 @@ use glyph_brush::{
 ///
 /// Used for queuing and rendering text with [`TextBrush::draw`].
 pub struct TextBrush<F = FontArc, H = DefaultSectionHasher> {
-    inner: glyph_brush::GlyphBrush<Vertex, Extra, F, H>,
+    inner: glyph_brush::GlyphBrush<Vertex, TextExtra, F, H>,
     pipeline: Pipeline,
 }
 
