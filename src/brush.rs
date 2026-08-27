@@ -16,6 +16,7 @@ use glyph_brush::{
 pub struct TextBrush<F = FontArc, H = DefaultSectionHasher> {
     inner: glyph_brush::GlyphBrush<Vertex, TextExtra, F, H>,
     pipeline: Pipeline,
+    stem_darkening: f32,
 }
 
 impl<F, H> TextBrush<F, H>
@@ -79,9 +80,11 @@ where
         loop {
             // Contains BrushAction enum which marks for
             // drawing or redrawing (using old data).
+            let stem_px = self.stem_darkening;
+            let tex_dimensions = self.inner.texture_dimensions();
             let brush_action = self.inner.process_queued(
                 |rect, data| self.pipeline.update_texture(rect, data, queue),
-                Vertex::to_vertex,
+                move |vertex| Vertex::to_vertex_inflated(vertex, stem_px, tex_dimensions),
             );
 
             match brush_action {
@@ -228,6 +231,7 @@ pub struct BrushBuilder<F, H = DefaultSectionHasher> {
     multisample: wgpu::MultisampleState,
     multiview: Option<NonZeroU32>,
     matrix: Option<Matrix>,
+    stem_darkening: f32,
 }
 
 impl BrushBuilder<()> {
@@ -263,6 +267,7 @@ impl BrushBuilder<()> {
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
             matrix: None,
+            stem_darkening: 0.0,
         }
     }
 }
@@ -317,6 +322,17 @@ where
         self
     }
 
+    /// Widen every glyph edge by this fraction of a pixel, approximating
+    /// the stem darkening platform rasterizers like `CoreText` apply.
+    /// `0.0` is off. Keep it at or under half a pixel: the taps sample
+    /// half a texel past the offset through bilinear filtering, and the
+    /// atlas pads glyphs by one pixel, so anything larger reads neighbor
+    /// glyphs. Only applies to non sRGB targets.
+    pub fn with_stem_darkening(mut self, strength: f32) -> Self {
+        self.stem_darkening = strength;
+        self
+    }
+
     /// Builds a [`TextBrush`] while consuming [`BrushBuilder`], for later drawing text
     /// onto a texture of the specified `render_width`, `render_height` and [`wgpu::TextureFormat`].
     ///
@@ -343,8 +359,13 @@ where
             self.multiview,
             inner.texture_dimensions(),
             matrix,
+            self.stem_darkening,
         );
 
-        TextBrush { inner, pipeline }
+        TextBrush {
+            inner,
+            pipeline,
+            stem_darkening: self.stem_darkening,
+        }
     }
 }
