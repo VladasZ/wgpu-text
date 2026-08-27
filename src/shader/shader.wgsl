@@ -81,6 +81,31 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(in.color.rgb, in.color.a * alpha);
 }
 
+// How far the darkening entry point widens every glyph edge, in atlas
+// pixels. 0.0 is identity.
+override stem_px: f32 = 0.0;
+
+// CoreText applies stem darkening when it rasterizes text, so glyphs on
+// macOS carry more ink than the plain outline. Dilating the coverage by
+// a fraction of a pixel approximates it: each fragment takes the
+// maximum of its own coverage and four neighbor taps stem_px away, so
+// every edge moves outward by that fraction, like the platform raster.
+// The vertex quads are inflated to give the widened edge room.
+@fragment
+fn fs_main_darken(in: VertexOutput) -> @location(0) vec4<f32> {
+    let texel = vec2<f32>(stem_px, stem_px) / vec2<f32>(textureDimensions(texture));
+    let dx = vec2<f32>(texel.x, 0.0);
+    let dy = vec2<f32>(0.0, texel.y);
+
+    var alpha: f32 = textureSample(texture, tex_sampler, in.tex_pos).r;
+    alpha = max(alpha, textureSample(texture, tex_sampler, in.tex_pos + dx).r);
+    alpha = max(alpha, textureSample(texture, tex_sampler, in.tex_pos - dx).r);
+    alpha = max(alpha, textureSample(texture, tex_sampler, in.tex_pos + dy).r);
+    alpha = max(alpha, textureSample(texture, tex_sampler, in.tex_pos - dy).r);
+
+    return vec4<f32>(in.color.rgb, in.color.a * alpha);
+}
+
 fn srgb_encode(c: f32) -> f32 {
     if c <= 0.0031308 {
         return c * 12.92;
