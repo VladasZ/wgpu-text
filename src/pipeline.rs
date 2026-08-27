@@ -30,6 +30,7 @@ impl Pipeline {
         multiview_mask: Option<NonZeroU32>,
         tex_dimensions: (u32, u32),
         matrix: Matrix,
+        stem_darkening: f32,
     ) -> Pipeline {
         let cache = Cache::new(device, tex_dimensions, matrix);
 
@@ -50,6 +51,15 @@ impl Pipeline {
                 immediate_size: 0,
             });
 
+        // Stem darkening replaces the plain entry, see the shader.
+        let fs_entry = if stem_darkening > 0.0 {
+            "fs_main_darken"
+        } else {
+            "fs_main"
+        };
+
+        let constants = [("stem_px", f64::from(stem_darkening))];
+
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("wgpu-text Render Pipeline"),
             layout: Some(&pipeline_layout),
@@ -68,13 +78,16 @@ impl Pipeline {
             multisample,
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some(fs_entry),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: render_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &constants,
+                    ..Default::default()
+                },
             }),
             cache: None,
             multiview_mask,
@@ -189,18 +202,32 @@ fn pack_color(color: [f32; 4]) -> [u8; 4] {
 }
 
 impl Vertex {
-    pub fn to_vertex(
+    /// The glyph quad and its texture window grown by `stem_px` on every
+    /// side, so the darkening entry point's dilation taps have room to
+    /// draw the widened edge instead of clipping it at the outline. The
+    /// atlas pads glyphs, so a sub pixel growth reads blank space, not a
+    /// neighbor glyph.
+    pub fn to_vertex_inflated(
         glyph_brush::GlyphVertex {
             mut tex_coords,
             pixel_coords,
             bounds,
             extra,
         }: glyph_brush::GlyphVertex<crate::TextExtra>,
+        stem_px: f32,
+        tex_dimensions: (u32, u32),
     ) -> Vertex {
         let mut rect = Rect {
-            min: point(pixel_coords.min.x, pixel_coords.min.y),
-            max: point(pixel_coords.max.x, pixel_coords.max.y),
+            min: point(pixel_coords.min.x - stem_px, pixel_coords.min.y - stem_px),
+            max: point(pixel_coords.max.x + stem_px, pixel_coords.max.y + stem_px),
         };
+
+        let tex_dx = stem_px / tex_dimensions.0 as f32;
+        let tex_dy = stem_px / tex_dimensions.1 as f32;
+        tex_coords.min.x -= tex_dx;
+        tex_coords.min.y -= tex_dy;
+        tex_coords.max.x += tex_dx;
+        tex_coords.max.y += tex_dy;
 
         // handle overlapping bounds, modify uv_rect to preserve texture aspect
         if rect.max.x > bounds.max.x {
