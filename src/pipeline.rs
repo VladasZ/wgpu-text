@@ -63,7 +63,16 @@ impl Pipeline {
             "fs_main"
         };
 
-        let constants = [("stem_px", f64::from(stem_darkening))];
+        // Only the darkening entry point reads the override. WebKit builds
+        // the Metal fragment function with the constants it is given, and a
+        // value for an override the entry point never references fails that
+        // build with "Fragment library could not be created", so the plain
+        // and gamma entries get none.
+        let constants: &[(&str, f64)] = if fs_entry == "fs_main_darken" {
+            &[("stem_px", f64::from(stem_darkening))]
+        } else {
+            &[]
+        };
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("wgpu-text Render Pipeline"),
@@ -90,7 +99,7 @@ impl Pipeline {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &constants,
+                    constants,
                     ..Default::default()
                 },
             }),
