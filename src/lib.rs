@@ -24,7 +24,7 @@ mod pipeline;
 
 pub use brush::{BrushBuilder, TextBrush};
 pub use error::BrushError;
-pub use extra::{TextBuilder, TextExtra};
+pub use extra::{MAX_SPREAD, TextBuilder, TextExtra};
 pub use glyph_brush;
 
 /// Sections and text carry [`TextExtra`] instead of [`glyph_brush::Extra`], so
