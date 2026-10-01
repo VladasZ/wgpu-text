@@ -15,7 +15,18 @@ pub struct TextExtra {
     pub color: [f32; 4],
     pub end_color: [f32; 4],
     pub z: f32,
+    /// Pixels the coverage of every glyph spreads by, 0 for plain text. A
+    /// section with a spread draws in `color` alone, through the effect
+    /// pipeline, and is what an outline or a soft shadow is made of.
+    pub spread: f32,
+    /// The spread is a blur, a gaussian with this radius. Else it is a hard
+    /// widening, every glyph edge moves out by the spread.
+    pub soft: bool,
 }
+
+/// The widest spread the effect pipeline draws, wider ones are cut to it.
+/// The fragment shader walks a square of this many pixels to each side.
+pub const MAX_SPREAD: f32 = 12.0;
 
 impl TextExtra {
     pub fn flat(color: [f32; 4], z: f32) -> Self {
@@ -23,6 +34,8 @@ impl TextExtra {
             color,
             end_color: color,
             z,
+            spread: 0.0,
+            soft: false,
         }
     }
 
@@ -31,6 +44,8 @@ impl TextExtra {
             color,
             end_color,
             z,
+            spread: 0.0,
+            soft: false,
         }
     }
 }
@@ -44,6 +59,8 @@ impl Hash for TextExtra {
         self.color.map(f32::to_bits).hash(state);
         self.end_color.map(f32::to_bits).hash(state);
         self.z.to_bits().hash(state);
+        self.spread.to_bits().hash(state);
+        self.soft.hash(state);
     }
 }
 
@@ -65,6 +82,12 @@ pub trait TextBuilder {
     fn with_color<C: Into<Color>>(self, color: C) -> Self;
     fn with_end_color<C: Into<Color>>(self, color: C) -> Self;
     fn with_z<Z: Into<f32>>(self, z: Z) -> Self;
+    /// Widens every glyph by `width` pixels on all sides. Drawn in the
+    /// outline color behind the same text it gives that text an outline.
+    fn with_outline(self, width: f32) -> Self;
+    /// Blurs the glyphs with a gaussian of this radius in pixels, for a
+    /// soft shadow.
+    fn with_blur(self, radius: f32) -> Self;
 }
 
 macro_rules! impl_text_builder {
@@ -87,6 +110,20 @@ macro_rules! impl_text_builder {
             #[inline]
             fn with_z<Z: Into<f32>>(mut self, z: Z) -> Self {
                 self.extra.z = z.into();
+                self
+            }
+
+            #[inline]
+            fn with_outline(mut self, width: f32) -> Self {
+                self.extra.spread = width.clamp(0.0, MAX_SPREAD);
+                self.extra.soft = false;
+                self
+            }
+
+            #[inline]
+            fn with_blur(mut self, radius: f32) -> Self {
+                self.extra.spread = radius.clamp(0.0, MAX_SPREAD);
+                self.extra.soft = true;
                 self
             }
         }

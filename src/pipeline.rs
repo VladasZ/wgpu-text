@@ -11,6 +11,8 @@ use crate::{Matrix, cache::Cache};
 #[derive(Debug)]
 pub struct Pipeline {
     inner: wgpu::RenderPipeline,
+    /// Draws the sections with a spread, see `TextExtra::spread`.
+    effect: wgpu::RenderPipeline,
     cache: Cache,
 
     vertex_buffer: wgpu::Buffer,
@@ -19,6 +21,8 @@ pub struct Pipeline {
     /// Byte range of the last written vertices, used by `draw`.
     range: Range<u64>,
     vertices: u32,
+    /// How many of the vertices, from the front, are effect glyphs.
+    effects: u32,
 }
 
 impl Pipeline {
@@ -33,6 +37,11 @@ impl Pipeline {
         stem_darkening: f32,
     ) -> Pipeline {
         let cache = Cache::new(device, tex_dimensions, matrix);
+
+        let depth_stencil_for_effect = depth_stencil.clone().map(|mut depth| {
+            depth.depth_compare = Some(wgpu::CompareFunction::LessEqual);
+            depth
+        });
 
         let shader =
             device.create_shader_module(wgpu::include_wgsl!("shader/shader.wgsl"));
@@ -102,25 +111,72 @@ impl Pipeline {
             multiview_mask,
         });
 
+        // Sections with a spread, the outlines and soft shadows. Their own
+        // entry points, the plain ones have no room for what the spread
+        // needs, see the shader. Their quads are grown by the spread and
+        // overlap the quads of the glyphs next to them at the same depth,
+        // so an equal depth must pass, or a glyph would cut the outline of
+        // its neighbor.
+        let effect_depth = depth_stencil_for_effect;
+        let effect = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("wgpu-text Effect Render Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_effect"),
+                buffers: &[Some(Vertex::buffer_layout())],
+                compilation_options: Default::default(),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: Some(wgpu::IndexFormat::Uint16),
+                ..Default::default()
+            },
+            depth_stencil: effect_depth,
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_effect"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: render_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            cache: None,
+            multiview_mask,
+        });
+
         Self {
             inner: pipeline,
+            effect,
             cache,
 
             vertex_buffer,
             cursor: 0,
             range: 0..0,
             vertices: 0,
+            effects: 0,
         }
     }
 
     /// Raw draw.
     pub fn draw(&self, rpass: &mut wgpu::RenderPass) {
         if self.vertices != 0 {
-            rpass.set_pipeline(&self.inner);
             rpass.set_vertex_buffer(0, self.vertex_buffer.slice(self.range.clone()));
             rpass.set_bind_group(0, &self.cache.bind_group, &[]);
 
-            rpass.draw(0..4, 0..self.vertices);
+            // The outlines and shadows first, the text they sit behind
+            // blends over them.
+            if self.effects != 0 {
+                rpass.set_pipeline(&self.effect);
+                rpass.draw(0..4, 0..self.effects);
+            }
+            if self.effects != self.vertices {
+                rpass.set_pipeline(&self.inner);
+                rpass.draw(0..4, self.effects..self.vertices);
+            }
         }
     }
 
@@ -140,6 +196,15 @@ impl Pipeline {
         if !append {
             self.cursor = 0;
         }
+
+        // The effect glyphs go to the front of the batch, each kind keeps
+        // its order, so the 2 pipelines draw 2 ranges of 1 buffer.
+        let mut vertices = vertices;
+        vertices.sort_by_key(|vertex| !vertex.is_effect());
+        self.effects = vertices
+            .iter()
+            .take_while(|vertex| vertex.is_effect())
+            .count() as u32;
 
         self.vertices = vertices.len() as u32;
 
@@ -203,6 +268,13 @@ pub struct Vertex {
     /// Packed to keep the per glyph cost at 12 bytes instead of 24. Eight bits
     /// per channel is what a source color has anyway.
     end_color: [u8; 4],
+    /// The glyph's own box before the spread grew the quad, left, top,
+    /// right, bottom. The effect shader takes no sample outside it, the
+    /// atlas has other glyphs there.
+    glyph_rect: [f32; 4],
+    /// Pixels the coverage spreads by, and 1 when the spread is a blur.
+    /// Both 0 for plain text.
+    spread: [f32; 2],
 }
 
 /// The shader reads this back as `Unorm8x4`.
@@ -211,11 +283,17 @@ fn pack_color(color: [f32; 4]) -> [u8; 4] {
 }
 
 impl Vertex {
+    /// Drawn by the effect pipeline, an outline or a soft shadow.
+    pub fn is_effect(&self) -> bool {
+        self.spread[0] > 0.0
+    }
+
     /// The glyph quad and its texture window grown by `stem_px` on every
     /// side, so the darkening entry point's dilation taps have room to
     /// draw the widened edge instead of clipping it at the outline. The
     /// atlas pads glyphs, so a sub pixel growth reads blank space, not a
-    /// neighbor glyph.
+    /// neighbor glyph. A section with a spread grows by the spread instead,
+    /// and carries the glyph's own box so the effect shader stays inside it.
     pub fn to_vertex_inflated(
         glyph_brush::GlyphVertex {
             mut tex_coords,
@@ -226,6 +304,21 @@ impl Vertex {
         stem_px: f32,
         tex_dimensions: (u32, u32),
     ) -> Vertex {
+        let spread = extra.spread.clamp(0.0, crate::MAX_SPREAD);
+        // The blur reaches a pixel past its radius, the widening half a
+        // pixel for its smooth edge. A whole pixel keeps texels on pixels.
+        let stem_px = if spread > 0.0 {
+            spread.ceil() + 1.0
+        } else {
+            stem_px
+        };
+        let glyph_rect = [
+            pixel_coords.min.x,
+            pixel_coords.min.y,
+            pixel_coords.max.x,
+            pixel_coords.max.y,
+        ];
+
         let mut rect = Rect {
             min: point(pixel_coords.min.x - stem_px, pixel_coords.min.y - stem_px),
             max: point(pixel_coords.max.x + stem_px, pixel_coords.max.y + stem_px),
@@ -272,6 +365,8 @@ impl Vertex {
             color: extra.color,
             ramp: [bounds.min.y, bounds.max.y],
             end_color: pack_color(extra.end_color),
+            glyph_rect,
+            spread: [spread, if extra.soft { 1.0 } else { 0.0 }],
         }
     }
 
@@ -314,6 +409,16 @@ impl Vertex {
                     format: wgpu::VertexFormat::Unorm8x4,
                     offset: std::mem::size_of::<[f32; 15]>() as wgpu::BufferAddress,
                     shader_location: 6,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: std::mem::size_of::<[f32; 16]>() as wgpu::BufferAddress,
+                    shader_location: 7,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: std::mem::size_of::<[f32; 20]>() as wgpu::BufferAddress,
+                    shader_location: 8,
                 },
             ],
         }
