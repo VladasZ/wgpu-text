@@ -127,6 +127,20 @@ where
         queue: &wgpu::Queue,
         append: bool,
     ) -> Result<(), BrushError> {
+        if !append {
+            let max_image_dimension = device.limits().max_texture_dimension_2d;
+            if let Some((width, height)) =
+                self.pipeline.take_cache_growth(max_image_dimension)
+            {
+                self.pipeline.resize_texture(device, (width, height));
+                self.inner.resize_texture(width, height);
+            }
+        }
+
+        // Texture writes of an appending batch, held back until it is known
+        // whether they touch glyphs of an earlier batch.
+        let mut writes = Vec::new();
+
         // Process sections:
         loop {
             // Contains BrushAction enum which marks for
@@ -134,12 +148,20 @@ where
             let stem_px = self.stem_darkening;
             let tex_dimensions = self.inner.texture_dimensions();
             let brush_action = self.inner.process_queued(
-                |rect, data| self.pipeline.update_texture(rect, data, queue),
+                |rect, data| {
+                    if append {
+                        writes.push((rect, data.to_vec()));
+                    } else {
+                        self.pipeline.update_texture(rect, data, queue);
+                    }
+                },
                 move |vertex| Vertex::to_vertex_inflated(vertex, stem_px, tex_dimensions),
             );
 
             match brush_action {
                 Ok(action) => {
+                    self.pipeline.update_texture_append(&writes, device, queue);
+
                     break match action {
                         BrushAction::Draw(vertices) => self
                             .pipeline
@@ -175,6 +197,8 @@ where
                     };
                     self.pipeline.resize_texture(device, (width, height));
                     self.inner.resize_texture(width, height);
+                    // They were meant for the old cache layout.
+                    writes.clear();
                 }
             }
         }

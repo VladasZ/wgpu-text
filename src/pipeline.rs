@@ -23,6 +23,13 @@ pub struct Pipeline {
     vertices: u32,
     /// How many of the vertices, from the front, are effect glyphs.
     effects: u32,
+
+    /// Vertices of every batch of this frame. Their texture coordinates tell
+    /// which parts of the cache texture the recorded draws still read.
+    batches: Vec<Vec<Vertex>>,
+    /// Set when the batches of a frame did not fit into the cache texture
+    /// together, the next frame starts with a bigger one.
+    grow_cache: bool,
 }
 
 impl Pipeline {
@@ -158,6 +165,9 @@ impl Pipeline {
             range: 0..0,
             vertices: 0,
             effects: 0,
+
+            batches: Vec::new(),
+            grow_cache: false,
         }
     }
 
@@ -195,6 +205,7 @@ impl Pipeline {
     ) {
         if !append {
             self.cursor = 0;
+            self.batches.clear();
         }
 
         // The effect glyphs go to the front of the batch, each kind keeps
@@ -210,6 +221,7 @@ impl Pipeline {
 
         if vertices.is_empty() {
             self.range = self.cursor..self.cursor;
+            self.batches.push(vertices);
             return;
         }
 
@@ -229,6 +241,7 @@ impl Pipeline {
         queue.write_buffer(&self.vertex_buffer, self.cursor, data);
         self.range = self.cursor..self.cursor + size;
         self.cursor = self.range.end.next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT);
+        self.batches.push(vertices);
     }
 
     /// Keeps the previous vertices for another draw. The cursor skips
@@ -237,6 +250,67 @@ impl Pipeline {
     pub fn redraw(&mut self, append: bool) {
         let end = self.range.end.next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT);
         self.cursor = if append { self.cursor.max(end) } else { end };
+
+        if !append {
+            let last = self.batches.pop();
+            self.batches.clear();
+            self.batches.extend(last);
+        }
+    }
+
+    /// Texture writes of an appending batch. All queued texture writes
+    /// execute together before any render pass, like the buffer writes, and
+    /// a full cache reuses the space of glyphs the batch does not need. If
+    /// a write lands on a glyph an earlier draw of this frame still reads,
+    /// the writes go into a copy of the texture and that draw keeps the
+    /// old one.
+    pub fn update_texture_append(
+        &mut self,
+        writes: &[(Rectangle<u32>, Vec<u8>)],
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        if writes.iter().any(|(rect, _)| self.is_drawn(rect)) {
+            self.cache.fork_texture(device, queue);
+            self.batches.clear();
+            self.grow_cache = true;
+        }
+
+        for (rect, data) in writes {
+            self.cache.update_texture(*rect, data, queue);
+        }
+    }
+
+    /// Whether a batch of this frame draws a glyph from this part of the
+    /// cache texture. 1 texel is added around every glyph for the linear
+    /// filter.
+    fn is_drawn(&self, rect: &Rectangle<u32>) -> bool {
+        let (width, height) = self.cache.texture_dimensions();
+        let (width, height) = (width as f32, height as f32);
+        let min = [rect.min[0] as f32, rect.min[1] as f32];
+        let max = [rect.max[0] as f32, rect.max[1] as f32];
+
+        self.batches.iter().flatten().any(|v| {
+            v.tex_top_left[0] * width - 1.0 < max[0]
+                && v.tex_bottom_right[0] * width + 1.0 > min[0]
+                && v.tex_top_left[1] * height - 1.0 < max[1]
+                && v.tex_bottom_right[1] * height + 1.0 > min[1]
+        })
+    }
+
+    /// Returns the bigger cache texture size to start the frame with, if the
+    /// batches of the last frame did not fit together.
+    pub fn take_cache_growth(&mut self, max_dimension: u32) -> Option<(u32, u32)> {
+        if !std::mem::take(&mut self.grow_cache) {
+            return None;
+        }
+
+        let (width, height) = self.cache.texture_dimensions();
+        let grown = (
+            (width * 2).min(max_dimension),
+            (height * 2).min(max_dimension),
+        );
+        (grown != (width, height)).then_some(grown)
     }
 
     #[inline]
@@ -252,6 +326,8 @@ impl Pipeline {
     #[inline]
     pub fn resize_texture(&mut self, device: &wgpu::Device, tex_dimensions: (u32, u32)) {
         self.cache.recreate_texture(device, tex_dimensions);
+        // Recorded draws keep the old texture, writes can not reach them.
+        self.batches.clear();
     }
 }
 
