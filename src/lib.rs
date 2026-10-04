@@ -21,6 +21,7 @@ mod cache;
 mod error;
 mod extra;
 mod pipeline;
+mod shared;
 
 pub use brush::{BrushBuilder, TextBrush};
 pub use error::BrushError;

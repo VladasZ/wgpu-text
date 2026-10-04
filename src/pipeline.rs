@@ -5,7 +5,7 @@ use glyph_brush::{
     ab_glyph::{Rect, point},
 };
 
-use crate::{Matrix, cache::Cache};
+use crate::{Matrix, cache::Cache, shared::Shared};
 
 /// Responsible for drawing text.
 #[derive(Debug)]
@@ -43,15 +43,20 @@ impl Pipeline {
         matrix: Matrix,
         stem_darkening: f32,
     ) -> Pipeline {
-        let cache = Cache::new(device, tex_dimensions, matrix);
-
-        let depth_stencil_for_effect = depth_stencil.clone().map(|mut depth| {
-            depth.depth_compare = Some(wgpu::CompareFunction::LessEqual);
-            depth
-        });
-
-        let shader =
-            device.create_shader_module(wgpu::include_wgsl!("shader/shader.wgsl"));
+        let shared = Shared::get(
+            device,
+            render_format,
+            depth_stencil,
+            multisample,
+            multiview_mask,
+            stem_darkening,
+        );
+        let cache = Cache::new(
+            device,
+            tex_dimensions,
+            matrix,
+            shared.bind_group_layout.clone(),
+        );
 
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wgpu-text Vertex Buffer"),
@@ -60,104 +65,9 @@ impl Pipeline {
             mapped_at_creation: false,
         });
 
-        let pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("wgpu-text Render Pipeline Layout"),
-                bind_group_layouts: &[Some(&cache.bind_group_layout)],
-                immediate_size: 0,
-            });
-
-        // Stem darkening replaces the plain entry, see the shader.
-        let fs_entry = if stem_darkening > 0.0 {
-            "fs_main_darken"
-        } else {
-            "fs_main"
-        };
-
-        // Only the darkening entry point reads the override. WebKit builds
-        // the Metal fragment function with the constants it is given, and a
-        // value for an override the entry point never references fails that
-        // build with "Fragment library could not be created", so the plain
-        // entry gets none.
-        let constants: &[(&str, f64)] = if fs_entry == "fs_main_darken" {
-            &[("stem_px", f64::from(stem_darkening))]
-        } else {
-            &[]
-        };
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("wgpu-text Render Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Some(Vertex::buffer_layout())],
-                compilation_options: Default::default(),
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                strip_index_format: Some(wgpu::IndexFormat::Uint16),
-                ..Default::default()
-            },
-            depth_stencil,
-            multisample,
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some(fs_entry),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: render_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants,
-                    ..Default::default()
-                },
-            }),
-            cache: None,
-            multiview_mask,
-        });
-
-        // Sections with a spread, the outlines and soft shadows. Their own
-        // entry points, the plain ones have no room for what the spread
-        // needs, see the shader. Their quads are grown by the spread and
-        // overlap the quads of the glyphs next to them at the same depth,
-        // so an equal depth must pass, or a glyph would cut the outline of
-        // its neighbor.
-        let effect_depth = depth_stencil_for_effect;
-        let effect = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("wgpu-text Effect Render Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_effect"),
-                buffers: &[Some(Vertex::buffer_layout())],
-                compilation_options: Default::default(),
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                strip_index_format: Some(wgpu::IndexFormat::Uint16),
-                ..Default::default()
-            },
-            depth_stencil: effect_depth,
-            multisample,
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_effect"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: render_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            cache: None,
-            multiview_mask,
-        });
-
         Self {
-            inner: pipeline,
-            effect,
+            inner: shared.inner,
+            effect: shared.effect,
             cache,
 
             vertex_buffer,
@@ -319,7 +229,12 @@ impl Pipeline {
     }
 
     #[inline]
-    pub fn update_texture(&mut self, size: Rectangle<u32>, data: &[u8], queue: &wgpu::Queue) {
+    pub fn update_texture(
+        &mut self,
+        size: Rectangle<u32>,
+        data: &[u8],
+        queue: &wgpu::Queue,
+    ) {
         self.cache.update_texture(size, data, queue);
     }
 
