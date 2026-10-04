@@ -12,6 +12,11 @@ pub struct Cache {
     matrix_buffer: wgpu::Buffer,
     texture: wgpu::Texture,
     sampler: wgpu::Sampler,
+
+    /// What the texture holds, one byte a texel. A fork writes the new
+    /// texture from here. A texture to texture copy made an LG TV with a
+    /// Mali GPU and the Chromium 79 engine drop the whole WebGL context.
+    pixels: Vec<u8>,
 }
 
 impl Cache {
@@ -104,6 +109,7 @@ impl Cache {
             sampler,
             bind_group,
             bind_group_layout,
+            pixels: empty_pixels(tex_dimensions),
         }
     }
 
@@ -113,22 +119,24 @@ impl Cache {
         tex_dimensions: (u32, u32),
     ) {
         self.set_texture(device, Self::create_cache_texture(device, tex_dimensions));
+        self.pixels = empty_pixels(tex_dimensions);
     }
 
     /// Replaces the texture with a copy of itself. Draws that are already
     /// recorded keep the old texture, so later writes do not reach them.
     pub fn fork_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        let texture = Self::create_cache_texture(device, self.texture_dimensions());
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("wgpu-text Cache Texture Copy"),
-            });
-        encoder.copy_texture_to_texture(
-            self.texture.as_image_copy(),
+        let (width, height) = self.texture_dimensions();
+        let texture = Self::create_cache_texture(device, (width, height));
+        queue.write_texture(
             texture.as_image_copy(),
-            self.texture.size(),
+            &self.pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width),
+                rows_per_image: Some(height),
+            },
+            texture.size(),
         );
-        queue.submit([encoder.finish()]);
         self.set_texture(device, texture);
     }
 
@@ -166,7 +174,14 @@ impl Cache {
         queue.write_buffer(&self.matrix_buffer, 0, bytemuck::cast_slice(&matrix));
     }
 
-    pub fn update_texture(&self, size: Rectangle<u32>, data: &[u8], queue: &wgpu::Queue) {
+    pub fn update_texture(
+        &mut self,
+        size: Rectangle<u32>,
+        data: &[u8],
+        queue: &wgpu::Queue,
+    ) {
+        write_pixels(&mut self.pixels, self.texture.width(), size, data);
+
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
@@ -209,9 +224,49 @@ impl Cache {
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::R8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC,
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         })
+    }
+}
+
+fn empty_pixels(dimensions: (u32, u32)) -> Vec<u8> {
+    vec![0; dimensions.0 as usize * dimensions.1 as usize]
+}
+
+/// Copies the rows of `data` into `rect` of a texture `width` texels wide.
+fn write_pixels(pixels: &mut [u8], width: u32, rect: Rectangle<u32>, data: &[u8]) {
+    let width = width as usize;
+    let rect_width = rect.width() as usize;
+    let left = rect.min[0] as usize;
+
+    for (row, line) in data.chunks_exact(rect_width).enumerate() {
+        let start = (rect.min[1] as usize + row) * width + left;
+        pixels[start..start + rect_width].copy_from_slice(line);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use glyph_brush::Rectangle;
+
+    use super::{empty_pixels, write_pixels};
+
+    #[test]
+    fn a_write_lands_in_its_rect_only() {
+        let mut pixels = empty_pixels((4, 3));
+        let rect = Rectangle {
+            min: [1, 1],
+            max: [3, 3],
+        };
+
+        write_pixels(&mut pixels, 4, rect, &[1, 2, 3, 4]);
+
+        #[rustfmt::skip]
+        assert_eq!(pixels, [
+            0, 0, 0, 0,
+            0, 1, 2, 0,
+            0, 3, 4, 0,
+        ]);
     }
 }
