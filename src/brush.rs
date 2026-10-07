@@ -401,6 +401,14 @@ where
         self
     }
 
+    /// Whether glyphs are drawn into the cache on the global rayon pool. On by
+    /// default. That pool never ends, so a program that has to give every
+    /// thread back turns this off.
+    pub fn with_multithread(mut self, multithread: bool) -> Self {
+        self.inner = self.inner.multithread(multithread);
+        self
+    }
+
     /// Builds a [`TextBrush`] while consuming [`BrushBuilder`], for later drawing text
     /// onto a texture of the specified `render_width`, `render_height` and [`wgpu::TextureFormat`].
     ///
