@@ -1,4 +1,4 @@
-use std::{num::NonZeroU32, ops::Range};
+use std::ops::Range;
 
 use glyph_brush::{
     Rectangle,
@@ -32,24 +32,12 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    pub fn new(
+    pub(crate) fn new(
         device: &wgpu::Device,
-        render_format: wgpu::TextureFormat,
-        depth_stencil: Option<wgpu::DepthStencilState>,
-        multisample: wgpu::MultisampleState,
-        multiview_mask: Option<NonZeroU32>,
+        shared: Shared,
         tex_dimensions: (u32, u32),
         matrix: Matrix,
-        stem_darkening: f32,
     ) -> Pipeline {
-        let shared = Shared::get(
-            device,
-            render_format,
-            depth_stencil,
-            multisample,
-            multiview_mask,
-            stem_darkening,
-        );
         let cache = Cache::new(
             device,
             tex_dimensions,
@@ -180,20 +168,21 @@ impl Pipeline {
         }
     }
 
-    /// Whether a batch of this frame draws a glyph from `rect`, with 1 texel
-    /// around it for the linear filter.
+    /// Whether a write to `rect` lands in the atlas slot of a glyph that a
+    /// batch of this frame draws.
+    ///
+    /// The test uses the slot, not the drawn quad. The quad is grown by the
+    /// stem darkening or the spread, and the cache packs the next glyph
+    /// right after the slot of the last one. A test on the quad took every
+    /// new glyph in a row for an overwrite, and each of those copied and
+    /// doubled the whole atlas.
     fn is_drawn(&self, rect: &Rectangle<u32>) -> bool {
-        let (width, height) = self.cache.texture_dimensions();
-        let (width, height) = (width as f32, height as f32);
-        let min = [rect.min[0] as f32, rect.min[1] as f32];
-        let max = [rect.max[0] as f32, rect.max[1] as f32];
-
-        self.batches.iter().flatten().any(|v| {
-            v.tex_top_left[0] * width - 1.0 < max[0]
-                && v.tex_bottom_right[0] * width + 1.0 > min[0]
-                && v.tex_top_left[1] * height - 1.0 < max[1]
-                && v.tex_bottom_right[1] * height + 1.0 > min[1]
-        })
+        let dimensions = self.cache.texture_dimensions();
+        self.batches
+            .iter()
+            .flatten()
+            .filter_map(|vertex| vertex.atlas_slot(dimensions))
+            .any(|slot| slot.overlaps(rect))
     }
 
     /// The cache texture size to start the frame with, if it has to grow.
@@ -260,10 +249,58 @@ fn pack_color(color: [f32; 4]) -> [u8; 4] {
     color.map(|channel| (channel.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
 }
 
+/// Texels of the atlas, the max side not included.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Slot {
+    min: [f32; 2],
+    max: [f32; 2],
+}
+
+impl Slot {
+    fn overlaps(&self, rect: &Rectangle<u32>) -> bool {
+        self.min[0] < rect.max[0] as f32
+            && self.max[0] > rect.min[0] as f32
+            && self.min[1] < rect.max[1] as f32
+            && self.max[1] > rect.min[1] as f32
+    }
+}
+
 impl Vertex {
     /// Drawn by the effect pipeline, an outline or a soft shadow.
     pub fn is_effect(&self) -> bool {
         self.spread[0] > 0.0
+    }
+
+    /// The texels the cache gave this glyph: its own box and the 1 texel of
+    /// padding around it, the most any shader reads. The quad maps to its
+    /// texture window in a straight line, so the box in pixels maps back to
+    /// the box in the atlas, also for a quad cut at the section bounds.
+    /// `None` for a quad cut to nothing.
+    fn atlas_slot(&self, (width, height): (u32, u32)) -> Option<Slot> {
+        let quad = [
+            self.bottom_right[0] - self.top_left[0],
+            self.bottom_right[1] - self.top_left[1],
+        ];
+        if quad[0] <= 0.0 || quad[1] <= 0.0 {
+            return None;
+        }
+
+        let size = [width as f32, height as f32];
+        let edge = |axis: usize, pixel: f32| {
+            let texels_per_pixel =
+                (self.tex_bottom_right[axis] - self.tex_top_left[axis]) * size[axis]
+                    / quad[axis];
+            self.tex_top_left[axis] * size[axis]
+                + (pixel - self.top_left[axis]) * texels_per_pixel
+        };
+        let [left, top, right, bottom] = self.glyph_rect;
+
+        // The cache places glyphs on whole texels, rounding drops the float
+        // error so a glyph packed right after this slot does not touch it.
+        Some(Slot {
+            min: [edge(0, left).round() - 1.0, edge(1, top).round() - 1.0],
+            max: [edge(0, right).round() + 1.0, edge(1, bottom).round() + 1.0],
+        })
     }
 
     /// The glyph quad and its texture window grown by `stem_px` on every
@@ -400,5 +437,93 @@ impl Vertex {
                 },
             ],
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use glyph_brush::{
+        GlyphVertex, Rectangle,
+        ab_glyph::{Rect, point},
+    };
+
+    use super::{Slot, Vertex};
+    use crate::TextExtra;
+
+    const ATLAS: (u32, u32) = (256, 256);
+
+    /// A 10 by 10 glyph the cache placed at texels 11 to 21, so its padded
+    /// slot is 10 to 22, drawn at pixels 100 to 110.
+    fn glyph(extra: &TextExtra, stem_px: f32, bounds: Rect) -> Vertex {
+        let texel = |value: f32| value / ATLAS.0 as f32;
+        Vertex::to_vertex_inflated(
+            GlyphVertex {
+                tex_coords: Rect {
+                    min: point(texel(11.0), texel(11.0)),
+                    max: point(texel(21.0), texel(21.0)),
+                },
+                pixel_coords: Rect {
+                    min: point(100.0, 100.0),
+                    max: point(110.0, 110.0),
+                },
+                bounds,
+                extra,
+            },
+            stem_px,
+            ATLAS,
+        )
+    }
+
+    fn open_bounds() -> Rect {
+        Rect {
+            min: point(0.0, 0.0),
+            max: point(1000.0, 1000.0),
+        }
+    }
+
+    fn rect(min: [u32; 2], max: [u32; 2]) -> Rectangle<u32> {
+        Rectangle { min, max }
+    }
+
+    const PADDED_SLOT: Slot = Slot {
+        min: [10.0, 10.0],
+        max: [22.0, 22.0],
+    };
+
+    #[test]
+    fn a_darkened_glyph_owns_its_padded_slot_only() {
+        let extra = TextExtra::flat([1.0; 4], 0.0);
+        let slot = glyph(&extra, 0.5, open_bounds()).atlas_slot(ATLAS).unwrap();
+
+        assert_eq!(slot, PADDED_SLOT);
+        // The cache packs the next glyph of the row right after the slot.
+        assert!(!slot.overlaps(&rect([22, 10], [34, 22])));
+        // A glyph in a row freed by the cache lands on the slot.
+        assert!(slot.overlaps(&rect([12, 12], [20, 20])));
+        assert!(slot.overlaps(&rect([0, 21], [11, 30])));
+    }
+
+    #[test]
+    fn an_outline_owns_the_same_slot_as_its_glyph() {
+        let mut extra = TextExtra::flat([1.0; 4], 0.0);
+        extra.spread = 3.0;
+        let vertex = glyph(&extra, 0.0, open_bounds());
+
+        assert!(vertex.is_effect());
+        assert_eq!(vertex.atlas_slot(ATLAS), Some(PADDED_SLOT));
+    }
+
+    #[test]
+    fn a_glyph_cut_by_its_section_keeps_its_whole_slot() {
+        let extra = TextExtra::flat([1.0; 4], 0.0);
+        let bounds = Rect {
+            min: point(0.0, 0.0),
+            max: point(104.0, 1000.0),
+        };
+
+        assert_eq!(
+            glyph(&extra, 0.5, bounds).atlas_slot(ATLAS),
+            Some(PADDED_SLOT)
+        );
     }
 }

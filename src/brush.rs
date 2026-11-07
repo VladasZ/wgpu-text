@@ -4,6 +4,7 @@ use crate::{
     Matrix, Section, TextExtra,
     error::BrushError,
     pipeline::{Pipeline, Vertex},
+    shared::Shared,
 };
 use glyph_brush::{
     BrushAction, DefaultSectionHasher, GlyphCruncher, SectionGlyphIter,
@@ -425,16 +426,15 @@ where
             .matrix
             .unwrap_or_else(|| crate::ortho(render_width as f32, render_height as f32));
 
-        let pipeline = Pipeline::new(
+        let shared = Shared::get(
             device,
             render_format,
             self.depth_stencil,
             self.multisample,
             self.multiview,
-            inner.texture_dimensions(),
-            matrix,
             self.stem_darkening,
         );
+        let pipeline = Pipeline::new(device, shared, inner.texture_dimensions(), matrix);
 
         TextBrush {
             inner,
